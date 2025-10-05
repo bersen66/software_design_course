@@ -64,10 +64,10 @@ flowchart TB
         executor[Cmd-executor]
         builder[CommandBuilder]
         pipeline[PipelineCommand]
+        intCmd[Built-in Commands]
     end
 
     subgraph System
-        intCmd[Built-in Commands]
         extCmd[External Commands]
     end
 
@@ -80,4 +80,5 @@ flowchart TB
     executor --> intCmd
     executor --> extCmd
     executor --> pipeline
+    expander --> env
 ```
