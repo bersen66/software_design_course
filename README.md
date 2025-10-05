@@ -1,1 +1,1 @@
-# software_design_course
+# Software design course
