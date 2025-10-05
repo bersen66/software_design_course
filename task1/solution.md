@@ -52,3 +52,32 @@
     * Изменить функцию синтаксического анализа
     * Expander -- без изменений
     * Реализовать наследника `PipelineCommand`
+  
+### Диаграмма компонентов
+```mermaid
+flowchart TB
+    subgraph CLI [CLI Interpreter]
+        lexer[Lexer]
+        parser[Parser]
+        expander[Expander]
+        env[Environment Manager]
+        executor[Cmd-executor]
+        builder[CommandBuilder]
+        pipeline[PipelineCommand]
+    end
+
+    subgraph System
+        intCmd[Built-in Commands]
+        extCmd[External Commands]
+    end
+
+    builder --> lexer
+    builder --> parser
+    builder --> expander
+    parser --> builder
+    executor --> builder
+    executor --> env
+    executor --> intCmd
+    executor --> extCmd
+    executor --> pipeline
+```
