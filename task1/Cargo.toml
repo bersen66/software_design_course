@@ -1,0 +1,10 @@
+[package]
+name = "shell_commands"
+version = "0.1.0"
+edition = "2025"
+
+[dependencies]
+anyhow = "1.0"
+
+[dev-dependencies]
+tempdir = "0.3"
