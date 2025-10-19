@@ -18,7 +18,7 @@ jobs:
         fetch-depth: 0
     - name: Build
       run: cargo build --verbose
-      working-directory: software_design_course/task1
+      working-directory: task1
     - name: Run tests
       run: cargo test --verbose
-      working-directory: software_design_course/task1
+      working-directory: task1
