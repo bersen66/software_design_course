@@ -1,10 +1,10 @@
 use crate::command::{ExitCode, ShellCommand};
 use crate::env::Environment;
 use anyhow::{Context, Result};
+use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::env;
 
 pub struct Pwd;
 
