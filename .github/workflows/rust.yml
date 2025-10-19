@@ -1,10 +1,11 @@
+---
 name: Build, test and collect coverage (task 1)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,12 +14,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-      with:
-        fetch-depth: 0
-    - name: Build
-      run: cargo build --verbose
-      working-directory: task1
-    - name: Run tests
-      run: cargo test --verbose
-      working-directory: task1
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Build
+        run: cargo build --verbose
+        working-directory: task1
+      - name: Run tests
+        run: cargo test --verbose
+        working-directory: task1
