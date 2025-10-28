@@ -16,6 +16,7 @@ pub mod env;
 mod external;
 mod interpreter;
 mod lexer;
+mod parser;
 
 /// Just a convenient re-export of the interactive command runner.
 ///
