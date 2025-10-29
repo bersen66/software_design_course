@@ -5,7 +5,6 @@ use crate::lexer::WordPart;
 use crate::parser::{self, AstNode, Word};
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result};
-use std::fs::read;
 use std::io::Read;
 use std::process::Stdio;
 
@@ -73,14 +72,20 @@ impl Interpreter {
         loop {
             // Added monke
             let readline = rl.readline("🐒$ ");
-            println!("Readed line: {:?}", readline);
+            if cfg!(debug_assertions) {
+                println!("Read line: {:?}", readline);
+            }
             match readline {
                 Ok(line) => {
                     rl.add_history_entry(line.as_str())?;
                     let tokens = lexer::split_into_tokens(line).unwrap();
-                    println!("Tokens = {:?}", tokens);
+                    if cfg!(debug_assertions) {
+                        println!("Tokens = {:?}", tokens);
+                    }
                     let ast = parser::construct_ast(tokens).unwrap();
-                    println!("Ast = {:?}", ast);
+                    if cfg!(debug_assertions) {
+                        println!("Ast = {:?}", ast);
+                    }
                     let err = self.execute_ast(&ast);
                     if err.is_err() {
                         println!("Execution error: {:?}", err.err());
