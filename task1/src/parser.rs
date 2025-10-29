@@ -215,7 +215,7 @@ impl AstBuilder {
 
         Ok(Word::Compound(path_parts))
     }
-    
+
     /// Parse an assignment: word '=' word?
     fn parse_assignment(&mut self) -> Result<AstNode, ParsingError> {
         // Get the name (must be a simple literal word)
@@ -332,7 +332,7 @@ pub fn construct_ast(tokens: Vec<Token>) -> Result<AstNode, ParsingError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexing::split_into_tokens;
+    use crate::lexer::split_into_tokens;
 
     #[test]
     fn test_simple_command() {
