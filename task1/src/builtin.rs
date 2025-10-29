@@ -150,6 +150,29 @@ impl BuiltinCommand for Cd {
 }
 
 #[derive(FromArgs)]
+/// Exit shell process
+pub struct Exit {
+    #[argh(positional, greedy)]
+    /// hack to ignore arguments, but actually should accept 0-255 value
+    pub _args: Vec<String>,
+}
+
+impl BuiltinCommand for Exit {
+    fn name() -> &'static str {
+        "exit"
+    }
+
+    fn execute(
+        self,
+        _stdin: &mut dyn Read,
+        _stdout: &mut dyn Write,
+        _env: &mut Environment,
+    ) -> Result<ExitCode> {
+        std::process::exit(0)
+    }
+}
+
+#[derive(FromArgs)]
 /// write the arguments to standard output, separated by spaces.
 /// by default, a trailing newline is printed.
 pub struct Echo {

@@ -188,6 +188,7 @@ impl Default for Interpreter {
             Box::new(Factory::<Pwd>::default()),
             Box::new(Factory::<Cd>::default()),
             Box::new(Factory::<Echo>::default()),
+            Box::new(Factory::<Exit>::default()),
             Box::new(Factory::<ExternalCommand>::default()),
         ])
     }
