@@ -20,8 +20,6 @@ pub enum Token {
     PipeOp,
     /// The equality symbol, `=`.
     Equal,
-    /// The dot symbol, `.`.
-    Dot,
     /// The slash symbol (path separator), `/`.
     Slash,
     /// Input redirection symbol, `<`.
@@ -130,7 +128,7 @@ impl LexingFSM {
             ' ' | '\t' => {}
             '|' => out.push(Token::PipeOp),
             '=' => out.push(Token::Equal),
-            '.' => out.push(Token::Dot),
+            // NOTE: '.' is removed here to treat it as a word character (part of a file name)
             '/' => out.push(Token::Slash),
             '<' => out.push(Token::RedirectLeft),
             '>' => out.push(Token::RedirectRight),
@@ -169,7 +167,8 @@ impl LexingFSM {
                 out.push(Token::Word(std::mem::take(&mut self.current_word)));
                 self.state = LexingState::Start;
             }
-            '|' | '=' | '/' | '.' | '<' | '>' => {
+            // NOTE: '.' is removed from this list to treat it as a word character
+            '|' | '=' | '/' | '<' | '>' => {
                 // Finalize the current word
                 self.finalize_current_word_part()?;
                 if !self.current_word.is_empty() {
@@ -179,7 +178,7 @@ impl LexingFSM {
                 let token = match ch {
                     '|' => Token::PipeOp,
                     '=' => Token::Equal,
-                    '.' => Token::Dot,
+                    // '.' is handled as part of 'c =>' now
                     '/' => Token::Slash,
                     '<' => Token::RedirectLeft,
                     '>' => Token::RedirectRight,
@@ -211,7 +210,7 @@ impl LexingFSM {
                 // Check if we're starting a simple parameter substitution
                 if !self.buffer.is_empty() && self.buffer == "$" {
                     // We have a $ followed by a valid parameter name character
-                    if c.is_alphabetic() || c == '_' {
+                    if c.is_alphabetic() || c.is_digit(10) || c == '_' {
                         // Continue collecting the parameter name
                         self.buffer.push(c);
                     } else {
@@ -362,7 +361,7 @@ impl LexingFSM {
                     self.current_word.push(WordPart::ParamSubst(param_name));
                 } else {
                     // Not a valid parameter name, treat as literal
-                    self.current_word.push(WordPart::Literal(self.buffer.clone()));
+                    self.current_word.push(WordPart::Literal(std::mem::take(&mut self.buffer)));
                 }
             } else {
                 // Regular literal

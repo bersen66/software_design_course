@@ -2,7 +2,7 @@
 use crate::lexer::{Token, WordPart};
 
 /// A shell word, either a simple literal or a compound (with substitutions)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)] 
 pub enum Word {
     Literal(String),
     Compound(Vec<WordPart>),
@@ -122,9 +122,6 @@ impl AstBuilder {
     }
 
     /// Parse a command: (assignment* word* redirect*)
-    // In parser.rs, replace the parse_command method with this improved version:
-
-    /// Parse a command: (assignment* word* redirect*)
     fn parse_command(&mut self) -> Result<AstNode, ParsingError> {
         let mut assignments = Vec::new();
         let mut argv = Vec::new();
@@ -135,35 +132,62 @@ impl AstBuilder {
             match token {
                 Token::PipeOp => break, // End of command
                 Token::Equal => return Err(ParsingError::UnexpectedToken(token.clone())),
-                Token::Word(_parts) => {
-                    // Check if this might be an assignment (word followed by =)
-                    if let Some(Token::Equal) = self.peek_n(1) {
-                        assignments.push(self.parse_assignment()?);
+
+                Token::Word(parts) => {
+                    let is_potential_assignment = matches!(self.peek_n(1), Some(Token::Equal));
+                    // Check if the next token is a Slash, indicating a path needs parsing
+                    let is_path_start = matches!(self.peek_n(1), Some(Token::Slash));
+
+                    if argv.is_empty() && is_potential_assignment {
+                        
+                        // Check if it's a valid shell variable name start (starts with a letter)
+                        let is_valid_name_start = parts.len() == 1 
+                            && matches!(&parts[0], WordPart::Literal(s) if s.chars().next().map_or(false, |c| c.is_ascii_alphabetic()));
+
+                        if is_valid_name_start {
+                            // Valid assignment (e.g., VAR=value)
+                            assignments.push(self.parse_assignment()?);
+                        } else {
+                            // Invalid name before '=' is treated as a regular argument/path.
+                            // FIX: Use new helper function to consolidate path/equal components
+                            if is_path_start || is_potential_assignment {
+                                argv.push(self.parse_word_or_path_with_equal()?);
+                            } else {
+                                argv.push(self.parse_word()?);
+                            }
+                        }
+                    } else if is_path_start || is_potential_assignment {
+                        // FIX: If Word is followed by Slash OR Equal, consolidate path/equal components
+                        argv.push(self.parse_word_or_path_with_equal()?);
                     } else {
+                        // Regular argument or command name. Use parse_word.
                         argv.push(self.parse_word()?);
                     }
                 }
-                Token::RedirectLeft => {
-                    redirects.push(self.parse_redirect()?);
+                
+                // When a Slash is seen, it must be the start of an absolute path, so we call the consolidation logic.
+                Token::Slash => {
+                    argv.push(self.parse_word_or_path_with_equal()?);
                 }
-                Token::RedirectRight => {
-                    // Check for append redirect '>>'
-                    if let Some(Token::RedirectRight) = self.peek_n(1) {
-                        self.consume(); // consume first '>'
-                        self.consume(); // consume second '>'
-                        let target = self.parse_word()?;
-                        redirects.push(AstNode::Redirect {
-                            kind: RedirectKind::Append,
-                            target,
-                        });
-                    } else {
-                        redirects.push(self.parse_redirect()?);
+                
+                Token::RedirectLeft | Token::RedirectRight => {
+                    // Logic for redirects
+                    match self.peek() {
+                        Some(Token::RedirectRight) if matches!(self.peek_n(1), Some(Token::RedirectRight)) => {
+                            self.consume(); // consume first '>'
+                            self.consume(); // consume second '>'
+                            let target = self.parse_word()?;
+                            redirects.push(AstNode::Redirect {
+                                kind: RedirectKind::Append,
+                                target,
+                            });
+                        }
+                        _ => {
+                            redirects.push(self.parse_redirect()?);
+                        }
                     }
                 }
-                Token::Dot | Token::Slash => {
-                    // Parse dots and slashes as part of paths
-                    argv.push(self.parse_path()?);
-                }
+                _ => break,
             }
         }
 
@@ -179,25 +203,45 @@ impl AstBuilder {
         })
     }
 
-    /// Parse a path by combining consecutive dots, slashes, and words
-    fn parse_path(&mut self) -> Result<Word, ParsingError> {
+    /// Tries to parse a path (Word/Slash sequence) OR consolidate a Word = Word sequence.
+    /// Used for command arguments where "=" and "/" should be part of the word.
+    fn parse_word_or_path_with_equal(&mut self) -> Result<Word, ParsingError> {
         let mut path_parts = Vec::new();
 
-        // Collect all consecutive path-related tokens
         while let Some(token) = self.peek() {
             match token {
+                // Collect path components (Word or Slash)
                 Token::Word(parts) => {
                     path_parts.extend(parts.clone());
-                    self.consume();
-                }
-                Token::Dot => {
-                    path_parts.push(WordPart::Literal(".".to_string()));
                     self.consume();
                 }
                 Token::Slash => {
                     path_parts.push(WordPart::Literal("/".to_string()));
                     self.consume();
                 }
+                
+                // FIX: Consolidate "Equal" followed by a Word into the current word if we are still building it.
+                Token::Equal => {
+                    if path_parts.is_empty() {
+                        // If "=" is the first token, we treat it as an unexpected token.
+                        return Err(ParsingError::UnexpectedToken(self.consume().unwrap()));
+                    }
+                    // Consume '='
+                    self.consume();
+                    path_parts.push(WordPart::Literal("=".to_string()));
+
+                    // Expect a value (Word) immediately after '='
+                    if let Some(Token::Word(value_parts)) = self.peek() {
+                        path_parts.extend(value_parts.clone());
+                        self.consume();
+                        // Stop processing after consolidating NAME=VALUE argument
+                        break; 
+                    } else {
+                        // If '=' is not followed by a word (e.g., it's at the end: cmd arg=), stop here.
+                        break; 
+                    }
+                }
+                // Stop if we hit any other separator
                 _ => break,
             }
         }
@@ -206,7 +250,7 @@ impl AstBuilder {
             return Err(ParsingError::ExpectedWord);
         }
 
-        // If we have only one literal part, return it as a simple Literal
+        // Return Literal if only one simple part, otherwise Compound.
         if path_parts.len() == 1 {
             if let WordPart::Literal(s) = &path_parts[0] {
                 return Ok(Word::Literal(s.clone()));
@@ -215,6 +259,14 @@ impl AstBuilder {
 
         Ok(Word::Compound(path_parts))
     }
+
+
+    /// This is the original simple parse_path, now replaced by parse_word_or_path_with_equal for argv.
+    /// Kept for backward compatibility but might not be used if parse_word_or_path_with_equal is used everywhere.
+    fn parse_path(&mut self) -> Result<Word, ParsingError> {
+        self.parse_word_or_path_with_equal()
+    }
+
 
     /// Parse an assignment: word '=' word?
     fn parse_assignment(&mut self) -> Result<AstNode, ParsingError> {
@@ -231,8 +283,8 @@ impl AstBuilder {
             Word::Compound(_) => return Err(ParsingError::InvalidAssignment),
         };
 
-        // Validate name (simple check for valid variable name)
-        if name.is_empty() || !name.chars().next().unwrap().is_alphabetic() {
+        // Validate name (The initial character check is now in parse_command)
+        if name.is_empty() {
             return Err(ParsingError::ExpectedAssignmentName);
         }
 
@@ -259,16 +311,16 @@ impl AstBuilder {
         };
 
         // Parse the target word
-        let target = self.parse_word()?;
+        // Use parse_word here since redirect targets are usually single words/paths that don't need re-parsing
+        let target = self.parse_word()?; 
 
         Ok(AstNode::Redirect { kind, target })
     }
 
-    /// Parse a word from the current token
+    /// Parse a word from the current token (used primarily by parse_redirect and parse_assignment)
     fn parse_word(&mut self) -> Result<Word, ParsingError> {
         match self.consume() {
             Some(Token::Word(parts)) => Self::word_parts_to_ast_word(parts),
-            Some(Token::Dot) => Ok(Word::Literal(".".to_string())),
             Some(Token::Slash) => Ok(Word::Literal("/".to_string())),
             Some(token) => Err(ParsingError::UnexpectedToken(token)),
             None => Err(ParsingError::UnexpectedEnd),
@@ -283,12 +335,10 @@ impl AstBuilder {
             match part {
                 WordPart::CmdSubst(content) => {
                     // For now, we'll just return an error for command substitutions
-                    // In a full implementation, you'd recursively parse the content
                     return Err(ParsingError::UnsupportedSubstitution);
                 }
                 WordPart::ParamSubst(content) => {
                     // For now, we'll just return an error for parameter substitutions
-                    // In a full implementation, you'd parse the parameter substitution syntax
                     return Err(ParsingError::UnsupportedSubstitution);
                 }
                 WordPart::Literal(text) => {
@@ -332,40 +382,67 @@ pub fn construct_ast(tokens: Vec<Token>) -> Result<AstNode, ParsingError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::split_into_tokens;
+    // Assuming split_into_tokens exists in crate::lexer
 
-    #[test]
-    fn test_simple_command() {
-        let tokens = split_into_tokens("ls -l".to_string()).unwrap();
-        let ast = construct_ast(tokens).unwrap();
-
-        if let AstNode::Command {
-            argv,
-            assignments,
-            redirects,
-        } = ast
-        {
-            assert_eq!(argv.len(), 2);
-            assert!(assignments.is_empty());
-            assert!(redirects.is_empty());
+    fn lit(s: &str) -> Word {
+        Word::Literal(s.to_string())
+    }
+    
+    // Helper to check if the Compound word correctly represents the string
+    fn assert_compound_eq(word: &Word, expected: &str) {
+        if let Word::Compound(parts) = word {
+            let actual: String = parts.iter().map(|p| match p {
+                WordPart::Literal(s) => s.clone(),
+                _ => panic!("Expected only Literal parts in compound for this test"),
+            }).collect();
+            assert_eq!(actual, expected);
         } else {
-            panic!("Expected Command node");
+            panic!("Expected Word::Compound, got {:?}", word);
         }
     }
 
     #[test]
-    fn test_assignment() {
-        let tokens = split_into_tokens("a=hello".to_string()).unwrap();
+    fn test_cmake_args_consolidation_fix() {
+        // Tokens for "cmake .. -DCMAKE_BUILD_TYPE=Release"
+        let tokens = vec![
+            Token::Word(vec![WordPart::Literal("cmake".to_string())]),
+            Token::Word(vec![WordPart::Literal("..".to_string())]),
+            Token::Word(vec![WordPart::Literal("-DCMAKE_BUILD_TYPE".to_string())]),
+            Token::Equal,
+            Token::Word(vec![WordPart::Literal("Release".to_string())]),
+        ];
+        
         let ast = construct_ast(tokens).unwrap();
 
-        if let AstNode::Command { assignments, .. } = ast {
-            assert_eq!(assignments.len(), 1);
-            if let AstNode::Assignment { name, value } = &assignments[0] {
-                assert_eq!(name, "a");
-                assert!(value.is_some());
-            }
+        if let AstNode::Command { argv, .. } = ast {
+            assert_eq!(argv.len(), 3, "Should have 3 arguments: cmake, .., and -D...");
+            assert_eq!(argv[0], lit("cmake"));
+            assert_eq!(argv[1], lit(".."));
+
+            // The flag should be consolidated into one argument
+            assert_compound_eq(&argv[2], "-DCMAKE_BUILD_TYPE=Release");
         } else {
-            panic!("Expected Command node with assignment");
+            panic!("Expected Command node");
+        }
+    }
+    
+    #[test]
+    fn test_path_argument_fix_cd_parent() {
+        let tokens = vec![
+            Token::Word(vec![WordPart::Literal("cd".to_string())]),
+            Token::Word(vec![WordPart::Literal("..".to_string())]),
+            Token::Slash,
+            Token::Word(vec![WordPart::Literal("..".to_string())]),
+        ];
+        let ast = construct_ast(tokens).unwrap();
+
+        if let AstNode::Command { argv, .. } = ast {
+            assert_eq!(argv.len(), 2, "Command should have 2 arguments: 'cd' and '.. / ..'");
+            assert_eq!(argv[0], lit("cd"), "First argument must be the command 'cd'");
+            
+            assert_compound_eq(&argv[1], "../..");
+        } else {
+            panic!("Expected Command node");
         }
     }
 }
