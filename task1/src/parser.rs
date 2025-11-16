@@ -2,62 +2,105 @@
 use crate::lexer::{Token, WordPart};
 
 /// A shell word, either a simple literal or a compound (with substitutions)
-#[derive(Debug, Clone, PartialEq)] 
+#[derive(Debug, Clone, PartialEq)]
 pub enum Word {
     Literal(String),
     Compound(Vec<WordPart>),
 }
 
 /// AST node for the shell
+///
+/// Represents a single element in the Abstract Syntax Tree (AST) constructed
+/// from the parsed shell commands. This enum captures the various structural
+/// components of a shell script or command line.
 #[derive(Debug)]
 pub enum AstNode {
-    /// A pipeline of commands connected by `|`
+    /// A **pipeline** of commands connected by the pipe operator (`|`).
+    /// The inner `Vec<AstNode>` contains the individual commands in execution order.
     Pipeline(Vec<AstNode>),
 
-    /// A simple command: argv, assignments, redirects
+    /// A **simple command** unit, which includes the command name and its arguments,
+    /// variable assignments preceding the command, and I/O redirections.
     Command {
+        /// The vector of words forming the command name and its arguments (`argv[0]`, `argv[1]`, etc.).
         argv: Vec<Word>,
-        assignments: Vec<AstNode>, // Assignment nodes
-        redirects: Vec<AstNode>,   // Redirect nodes
+        /// A list of preceding variable assignments that only apply to this command's environment.
+        assignments: Vec<AstNode>,
+        /// A list of I/O redirection specifications for this command.
+        redirects: Vec<AstNode>,
     },
 
-    /// Variable assignment: name=value
-    Assignment { name: String, value: Option<Word> },
+    /// A **variable assignment** statement in the form `name=value`.
+    /// This can occur either globally or locally within a `Command`.
+    Assignment {
+        /// The name of the variable being assigned.
+        name: String,
+        /// The value assigned to the variable. `None` if the assignment is just `name=` (empty string value).
+        value: Option<Word>
+    },
 
-    /// I/O redirection
-    Redirect { kind: RedirectKind, target: Word },
+    /// An **I/O redirection** specification (e.g., `>`, `<`, `>>`, `2>&1`).
+    Redirect {
+        /// The specific type of redirection (e.g., input, output, append, descriptor duplication).
+        kind: RedirectKind,
+        /// The file or descriptor target of the redirection.
+        target: Word
+    },
 
-    /// Substitution: either $(...) or ${...}
+    /// A **substitution** expression, such as command substitution `$(...)` or
+    /// variable substitution `${...}` (depending on the shell's full feature set).
     Substitution {
+        /// The specific type of substitution (e.g., Command, Variable).
         kind: SubstKind,
-        content: Box<AstNode>, // fully parsed AST of the inner command/pipeline
+        /// The fully parsed AST of the inner content. For command substitution,
+        /// this is typically the AST of the command or pipeline being executed.
+        content: Box<AstNode>,
     },
 }
 
 /// Kind of redirection
+///
+/// Defines the specific operation mode for an I/O redirection (`<`, `>`, `>>`).
 #[derive(Debug)]
 pub enum RedirectKind {
+    /// Input redirection (`<`): Reads standard input from a specified file.
     Input,
+    /// Output redirection (`>`): Writes standard output to a file, **overwriting** the file if it exists.
     Output,
+    /// Output redirection with append (`>>`): Writes standard output to a file, **appending** to the file if it exists.
     Append,
 }
 
 /// Kind of substitution
+///
+/// Defines the type of substitution syntax encountered in a command word.
 #[derive(Debug)]
 pub enum SubstKind {
-    Command,   // $(...)
+    /// **Command substitution** (`$(...)`): Executes the enclosed command/pipeline
+    /// and replaces the substitution with the command's standard output.
+    Command,    // $(...)
+    /// **Parameter substitution** (`${...}`): Evaluates and replaces the expression
+    /// with the value of a variable or a related expression.
     Parameter, // ${...}
 }
 
+/// Errors that can occur during the AST construction (parsing) phase.
 #[derive(Debug)]
 pub enum ParsingError {
+    /// Encountered a token that was not expected at the current position according to the grammar.
     UnexpectedToken(Token),
+    /// Reached the end of the token stream prematurely, indicating an incomplete command or structure.
     UnexpectedEnd,
+    /// Expected a `Word` (an argument, filename, or value) but found something else.
     ExpectedWord,
+    /// Expected the name part of a variable assignment (e.g., `VAR` in `VAR=value`).
     ExpectedAssignmentName,
+    /// The syntax used for a variable assignment was malformed (e.g., trying to assign to a keyword).
     InvalidAssignment,
+    /// A pipeline was parsed but contained zero commands (e.g., `| cmd` or `cmd |`).
     EmptyPipeline,
-    UnsupportedSubstitution, // For substitutions we haven't implemented yet
+    /// Encountered a substitution type or format that the parser does not yet support or recognize.
+    UnsupportedSubstitution,
 }
 
 struct AstBuilder {
@@ -139,9 +182,9 @@ impl AstBuilder {
                     let is_path_start = matches!(self.peek_n(1), Some(Token::Slash));
 
                     if argv.is_empty() && is_potential_assignment {
-                        
+
                         // Check if it's a valid shell variable name start (starts with a letter)
-                        let is_valid_name_start = parts.len() == 1 
+                        let is_valid_name_start = parts.len() == 1
                             && matches!(&parts[0], WordPart::Literal(s) if s.chars().next().map_or(false, |c| c.is_ascii_alphabetic()));
 
                         if is_valid_name_start {
@@ -164,12 +207,12 @@ impl AstBuilder {
                         argv.push(self.parse_word()?);
                     }
                 }
-                
+
                 // When a Slash is seen, it must be the start of an absolute path, so we call the consolidation logic.
                 Token::Slash => {
                     argv.push(self.parse_word_or_path_with_equal()?);
                 }
-                
+
                 Token::RedirectLeft | Token::RedirectRight => {
                     // Logic for redirects
                     match self.peek() {
@@ -219,7 +262,7 @@ impl AstBuilder {
                     path_parts.push(WordPart::Literal("/".to_string()));
                     self.consume();
                 }
-                
+
                 // FIX: Consolidate "Equal" followed by a Word into the current word if we are still building it.
                 Token::Equal => {
                     if path_parts.is_empty() {
@@ -235,10 +278,10 @@ impl AstBuilder {
                         path_parts.extend(value_parts.clone());
                         self.consume();
                         // Stop processing after consolidating NAME=VALUE argument
-                        break; 
+                        break;
                     } else {
                         // If '=' is not followed by a word (e.g., it's at the end: cmd arg=), stop here.
-                        break; 
+                        break;
                     }
                 }
                 // Stop if we hit any other separator
@@ -312,7 +355,7 @@ impl AstBuilder {
 
         // Parse the target word
         // Use parse_word here since redirect targets are usually single words/paths that don't need re-parsing
-        let target = self.parse_word()?; 
+        let target = self.parse_word()?;
 
         Ok(AstNode::Redirect { kind, target })
     }
@@ -374,6 +417,23 @@ impl AstBuilder {
     }
 }
 
+
+/// Constructs an **Abstract Syntax Tree (AST)** from a vector of tokens.
+///
+/// This function is the primary entry point for the **parsing stage**, transforming
+/// a flat sequence of lexical tokens into a hierarchical, tree-like structure
+/// that represents the code's syntax and structure.
+///
+/// # Arguments
+///
+/// * `tokens` - A `Vec<Token>` containing the sequence of tokens produced by the
+///   lexer (tokenizer).
+///
+/// # Returns
+///
+/// * `Result<AstNode, ParsingError>` - On success, returns the **root `AstNode`**
+///   of the fully constructed tree. On failure, returns a `ParsingError`
+///   detailing the syntactic issue encountered.
 pub fn construct_ast(tokens: Vec<Token>) -> Result<AstNode, ParsingError> {
     let builder = AstBuilder::from(tokens);
     builder.build_ast()
@@ -382,12 +442,11 @@ pub fn construct_ast(tokens: Vec<Token>) -> Result<AstNode, ParsingError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Assuming split_into_tokens exists in crate::lexer
 
     fn lit(s: &str) -> Word {
         Word::Literal(s.to_string())
     }
-    
+
     // Helper to check if the Compound word correctly represents the string
     fn assert_compound_eq(word: &Word, expected: &str) {
         if let Word::Compound(parts) = word {
@@ -411,7 +470,7 @@ mod tests {
             Token::Equal,
             Token::Word(vec![WordPart::Literal("Release".to_string())]),
         ];
-        
+
         let ast = construct_ast(tokens).unwrap();
 
         if let AstNode::Command { argv, .. } = ast {
@@ -425,7 +484,7 @@ mod tests {
             panic!("Expected Command node");
         }
     }
-    
+
     #[test]
     fn test_path_argument_fix_cd_parent() {
         let tokens = vec![
@@ -439,7 +498,7 @@ mod tests {
         if let AstNode::Command { argv, .. } = ast {
             assert_eq!(argv.len(), 2, "Command should have 2 arguments: 'cd' and '.. / ..'");
             assert_eq!(argv[0], lit("cd"), "First argument must be the command 'cd'");
-            
+
             assert_compound_eq(&argv[1], "../..");
         } else {
             panic!("Expected Command node");

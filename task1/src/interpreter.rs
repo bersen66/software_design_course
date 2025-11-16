@@ -72,24 +72,24 @@ impl Interpreter {
         loop {
             // Added monke
             let readline = rl.readline("🐒$ ");
-            if cfg!(debug_assertions) {
-                println!("Read line: {:?}", readline);
-            }
+            // if cfg!(debug_assertions) {
+            //    println!("Read line: {:?}", readline);
+            // }
             match readline {
                 Ok(line) => {
                     rl.add_history_entry(line.as_str())?;
                     let tokens = lexer::split_into_tokens(line).unwrap();
-                    if cfg!(debug_assertions) {
-                        println!("Tokens = {:?}", tokens);
-                    }
+                    // if cfg!(debug_assertions) {
+                    //     println!("Tokens = {:?}", tokens);
+                    // }
                     let ast = parser::construct_ast(tokens).unwrap();
-                    if cfg!(debug_assertions) {
-                        println!("Ast = {:?}", ast);
-                    }
+                    // if cfg!(debug_assertions) {
+                    //     println!("Ast = {:?}", ast);
+                    // }
                     let err = self.execute_ast(&ast);
-                    if err.is_err() {
-                        println!("Execution error: {:?}", err.err());
-                    }
+                    // if err.is_err() {
+                    //     println!("Execution error: {:?}", err.err());
+                    // }
                 }
                 Err(ReadlineError::Interrupted) => {
                     println!("Interrupted");
