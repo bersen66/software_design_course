@@ -206,6 +206,66 @@ impl BuiltinCommand for Echo {
     }
 }
 
+#[derive(argh::FromArgs)]
+/// count lines, words and bytes
+pub struct WC {
+    #[argh(positional, greedy)]
+    pub files: Vec<String>,
+}
+
+impl BuiltinCommand for WC {
+    fn name() -> &'static str { "wc" }
+
+    fn execute(self, stdin: &mut dyn Read, stdout: &mut dyn Write, _env: &mut Environment) -> Result<ExitCode> {
+        use std::io::Read;
+        if self.files.is_empty() {
+            let mut buf = String::new();
+            stdin.read_to_string(&mut buf)?;
+            let lines = buf.lines().count();
+            let words = buf.split_whitespace().count();
+            let bytes = buf.as_bytes().len();
+            writeln!(stdout, "{} {} {}", lines, words, bytes)?;
+            return Ok(0);
+        }
+        for fname in self.files {
+            let mut f = std::fs::File::open(&fname).map_err(|e| anyhow::anyhow!("wc: {}: {}", fname, e))?;
+            let mut s = String::new();
+            f.read_to_string(&mut s)?;
+            let lines = s.lines().count();
+            let words = s.split_whitespace().count();
+            let bytes = s.as_bytes().len();
+            writeln!(stdout, "{} {} {} {}", lines, words, bytes, fname)?;
+        }
+        Ok(0)
+    }
+}
+
+#[derive(argh::FromArgs)]
+/// print file(s) to stdout
+pub struct Cat {
+    #[argh(positional, greedy)]
+    pub files: Vec<String>,
+}
+
+impl BuiltinCommand for Cat {
+    fn name() -> &'static str { "cat" }
+
+    fn execute(self, _stdin: &mut dyn Read, stdout: &mut dyn Write, _env: &mut Environment) -> Result<ExitCode> {
+        if self.files.is_empty() {
+            // read stdin to stdout
+            let mut buf = String::new();
+            _stdin.read_to_string(&mut buf)?;
+            write!(stdout, "{}", buf)?;
+            return Ok(0);
+        }
+        for fname in self.files {
+            let mut f = std::fs::File::open(&fname).map_err(|e| anyhow::anyhow!("cat: {}: {}", fname, e))?;
+            std::io::copy(&mut f, stdout)?;
+        }
+        Ok(0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,5 +430,144 @@ mod tests {
 
         assert!(res.is_err());
         assert_eq!(stdenv::current_dir().unwrap(), orig);
+    }
+
+    #[test]
+    fn test_cat_reads_file() {
+        let _lock = lock_current_dir();
+
+        // create temp file
+        let mut tmp = stdenv::temp_dir();
+        tmp.push(format!("cat_test_file_{}", std::process::id()));
+        let mut f = fs::File::create(&tmp).expect("create tmp file");
+        write!(f, "hello\nworld\n").expect("write");
+        drop(f);
+
+        let mut env = Environment {
+            vars: HashMap::new(),
+            current_dir: stdenv::current_dir().unwrap(),
+            should_exit: false,
+        };
+
+        // Run cat on file
+        let cat = Cat { files: vec![tmp.to_string_lossy().to_string()] };
+        let mut out = Vec::new();
+        let res = cat.execute(&mut Cursor::new(Vec::new()), &mut out, &mut env);
+        assert!(res.is_ok());
+
+        let s = String::from_utf8(out).unwrap();
+        assert_eq!(s, "hello\nworld\n");
+
+        let _ = fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn test_cat_reads_stdin_when_no_args() {
+        let _lock = lock_current_dir();
+
+        let mut env = Environment {
+            vars: HashMap::new(),
+            current_dir: stdenv::current_dir().unwrap(),
+            should_exit: false,
+        };
+
+        let cat = Cat { files: Vec::new() };
+        let input = b"from stdin\nline2\n".to_vec();
+        let mut out = Vec::new();
+        let res = cat.execute(&mut Cursor::new(input), &mut out, &mut env);
+        assert!(res.is_ok());
+
+        let s = String::from_utf8(out).unwrap();
+        assert_eq!(s, "from stdin\nline2\n");
+    }
+
+    #[test]
+    fn test_wc_counts_file() {
+        let _lock = lock_current_dir();
+
+        // create temp file
+        let mut tmp = stdenv::temp_dir();
+        tmp.push(format!("wc_test_file_{}", std::process::id()));
+        let mut f = fs::File::create(&tmp).expect("create tmp file");
+        // two lines, three words, bytes include newlines
+        write!(f, "one two\nthree\n").expect("write");
+        drop(f);
+
+        let mut env = Environment {
+            vars: HashMap::new(),
+            current_dir: stdenv::current_dir().unwrap(),
+            should_exit: false,
+        };
+
+        let wc = WC { files: vec![tmp.to_string_lossy().to_string()] };
+        let mut out = Vec::new();
+        let res = wc.execute(&mut Cursor::new(Vec::new()), &mut out, &mut env);
+        assert!(res.is_ok());
+
+        let s = String::from_utf8(out).unwrap();
+        // Expect format: "<lines> <words> <bytes> <filename>\n"
+        // lines = 2, words = 3, bytes = len("one two\nthree\n") = 14
+        let expected_prefix = "2 3 ";
+        assert!(s.starts_with(expected_prefix));
+        assert!(s.trim_end().ends_with(&tmp.to_string_lossy().to_string()));
+
+        let _ = fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn test_wc_counts_stdin_when_no_args() {
+        let _lock = lock_current_dir();
+
+        let mut env = Environment {
+            vars: HashMap::new(),
+            current_dir: stdenv::current_dir().unwrap(),
+            should_exit: false,
+        };
+
+        let wc = WC { files: Vec::new() };
+        let input = b"a b c\n".to_vec(); // 1 line, 3 words, bytes = 6 (including newline)
+        let mut out = Vec::new();
+        let res = wc.execute(&mut Cursor::new(input), &mut out, &mut env);
+        assert!(res.is_ok());
+
+        let s = String::from_utf8(out).unwrap();
+        assert_eq!(s, "1 3 6\n");
+    }
+
+    #[test]
+    fn test_wc_multiple_files_output_contains_each_filename() {
+        let _lock = lock_current_dir();
+
+        // create two temp files
+        let mut tmp1 = stdenv::temp_dir();
+        tmp1.push(format!("wc_multi_{}_1", std::process::id()));
+        let mut f1 = fs::File::create(&tmp1).unwrap();
+        write!(f1, "a b\n").unwrap();
+        drop(f1);
+
+        let mut tmp2 = stdenv::temp_dir();
+        tmp2.push(format!("wc_multi_{}_2", std::process::id()));
+        let mut f2 = fs::File::create(&tmp2).unwrap();
+        write!(f2, "c\n").unwrap();
+        drop(f2);
+
+        let mut env = Environment {
+            vars: HashMap::new(),
+            current_dir: stdenv::current_dir().unwrap(),
+            should_exit: false,
+        };
+
+        let wc = WC { files: vec![tmp1.to_string_lossy().to_string(), tmp2.to_string_lossy().to_string()] };
+        let mut out = Vec::new();
+        let res = wc.execute(&mut Cursor::new(Vec::new()), &mut out, &mut env);
+        assert!(res.is_ok());
+
+        let s = String::from_utf8(out).unwrap();
+        // Should contain two lines, each ending with filename
+        assert!(s.contains(&tmp1.to_string_lossy().to_string()));
+        assert!(s.contains(&tmp2.to_string_lossy().to_string()));
+
+        let _ = fs::remove_file(tmp1);
+        let _ = fs::remove_file(tmp2);
     }
 }
