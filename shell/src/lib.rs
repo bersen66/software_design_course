@@ -17,8 +17,10 @@ mod external;
 mod interpreter;
 mod lexer;
 mod parser;
+mod io_adapters;
 
 /// Just a convenient re-export of the interactive command runner.
 ///
 /// See [`Interpreter`] for the high-level API and examples.
 pub use interpreter::Interpreter;
+pub use io_adapters::{MemReader, MemWriter};
