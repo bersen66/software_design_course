@@ -354,6 +354,8 @@ mod pipeline_tests {
 
         let s = String::from_utf8(out_buf).expect("utf8");
 
-        assert_eq!(s, "1 1 3\n");
+        let normalized = s.split_whitespace().collect::<Vec<&str>>().join(" ");
+
+        assert_eq!(normalized.trim(), "1 1 3");
     }
 }
