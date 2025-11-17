@@ -1,0 +1,25 @@
+---
+name: Build, test and collect coverage (shell)
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Build
+        run: cargo build --verbose
+        working-directory: shell
+      - name: Run tests
+        run: cargo test --verbose
+        working-directory: shell
