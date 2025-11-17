@@ -1,5 +1,5 @@
 ---
-name: Build, test and collect coverage (task 1)
+name: Build, test and collect coverage (shell)
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
           fetch-depth: 0
       - name: Build
         run: cargo build --verbose
-        working-directory: task1
+        working-directory: shell
       - name: Run tests
         run: cargo test --verbose
-        working-directory: task1
+        working-directory: shell
