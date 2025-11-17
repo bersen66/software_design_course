@@ -367,7 +367,8 @@ flowchart TD
 ```
 ---
 
-### Исполнение команд по AST (без внедренных Pipe-ов)
+
+## Исполнение команд по AST (без внедренных Pipe-ов)
 
 ```mermaid
 flowchart TD
@@ -404,78 +405,58 @@ flowchart TD
     BuildArgsRef --> RunCmd
 ```
 
-#### Исполнение команд по AST (с внедренными Pipe-ами)
+## Исполнение команд по AST (с внедренными Pipe-ами)
 
 ```mermaid
-stateDiagram-v2
-    direction LR
+flowchart TD
+    A[Start Execute AST] --> B{Root Node Type?};
+
+    subgraph SimpleCommand [Simple Command]
+        B -- Command --> C[1. Apply Assignments to shell env];
+        C --> D{2. argv empty?};
+        D -- Yes --> E[Return 0];
+        D -- No --> F[3. Resolve Name/Args];
+        F --> G[4. Call self.run];
+        G --> H([End Return ExitCode]);
+        E --> H;
+    end
     
-    [*] --> ExecuteAST
-
-state ExecuteAST {
-        ExecuteAST --> SimpleCommand : AstNode::Command
-        ExecuteAST --> PipelineExecution : AstNode::Pipeline
-        ExecuteAST --> Unsupported : Other
-    }
-    
-    ---
-
-    state SimpleCommand {
-        SimpleCommand: Execute Command
-        [*] --> ApplyAssignments: Присваивание VAR=VAL (модификация self.env)
-        ApplyAssignments --> CheckEmptyArgv
-        CheckEmptyArgv -->|argv пуст| [*]: Return Ok(0)
-        CheckEmptyArgv -->|argv не пуст| ResolveArgs: name/args через word_to_string(self.env)
-        ResolveArgs --> Run: Вызов self.run(&name, &args_ref)
-        Run --> [*]
-    }
-
-    ---
-
-    state PipelineExecution {
-        PipelineExecution: Pipeline Execution (|)
-        [*] --> InitPipeline: Init previous_output, last_exit
-        InitPipeline --> LoopPipeline
+    subgraph Pipeline [Pipeline]
+        B -- Pipeline --> I{Check Non-Empty?};
+        I -- Empty --> ErrorPipe(["Error: Empty Pipeline"]);
+        I -- OK --> J[1. Init Output and ExitCode];
         
-        state LoopPipeline {
-            LoopPipeline: Итерация по командам
-            [*] --> ApplyLocalEnv: Клон self.env; Присваивания VAR=VAL к local_env
-            ApplyLocalEnv --> ResolveArgsPipe: name/args через local_env (mem::replace)
-            ResolveArgsPipe --> CheckCommandType
-            
-            state CheckCommandType {
-                CheckCommandType -->|Внешняя (PATH lookup)| ExternalProcess
-                CheckCommandType -->|Встроенная (Built-in)| InternalCommand
-            }
-            
-            state ExternalProcess {
-                ExternalProcess: External Command (Spawn)
-                [*] --> Spawn: std::process::Command (envs из self.env)
-                Spawn --> PipeInput: previous_output в child stdin
-                PipeInput --> Wait: wait_with_output
-                Wait --> UpdateStateExternal: Store stdout в previous_output; Store exit code
-                UpdateStateExternal --> NextIteration
-            }
-            
-            state InternalCommand {
-                InternalCommand: Internal Command (Factory)
-                [*] --> CreateCmd: factory.try_create(...)
-                CreateCmd --> Execute: cmd.execute(..., self.env.clone())
-                Execute --> UpdateStateInternal: Store captured output (MemWriter) в previous_output; Store exit code
-                UpdateStateInternal --> NextIteration
-            }
-            
-            NextIteration -->|Есть команды| LoopPipeline
-            NextIteration -->|Нет команд| WriteFinalOutput
-        }
+        J --> K((Loop Start));
         
-        WriteFinalOutput --> WriteToFinal: final_stdout.write_all(previous_output)
-        WriteToFinal --> [*]: Return Ok(last_exit)
-    }
+        subgraph CommandExecution [Execute Command in Pipeline]
+            K --> L[2. Clone Env; Apply Assignments to local Env];
+            L --> M[3. Resolve Name/Args using local Env];
+            M --> N{4. External Command?};
 
-    ---
+            N -- Yes --> P[5a. External: Spawn Process envs from self.env];
+            P --> Q[6a. Pipe Input; Wait and Capture Output];
+            Q --> R[7. Update previous_output and last_exit];
+
+            N -- No --> S[5b. Internal: Factory Lookup];
+            S --> T[6b. Prep I/O MemReader MemWriter];
+            T --> U[7b. Execute cmd.execute with cloned self.env];
+            U --> R; 
+        end
+        
+        R --> K;
+        
+        K -->|Loop End| V{8. Final Output Captured?};
+        V -- Yes --> W[9. Write Captured Output to final_stdout];
+        V -- No --> X[Skip Write];
+        W --> Y([End Return last_exit]);
+        X --> Y;
+        ErrorPipe --> Y;
+    end
     
-    state Unsupported {
-        Unsupported --> [*]: Return unimplemented! error
-    }
+    B -- Other --> Z[Unimplemented];
+    Z --> EndUnimp([Error]);
 ```
+
+### Доработки по 2 стадии:
+
+Для того, чтобы удовлетворить требованиям из 2 ой части задачи `CLI` потребовалась только доработка инфраструктуры запуска команд.
