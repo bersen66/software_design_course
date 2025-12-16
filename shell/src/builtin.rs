@@ -3,8 +3,11 @@ use crate::env::Environment;
 use crate::interpreter::Factory;
 use anyhow::{Context, Result};
 use argh::{EarlyExit, FromArgs};
+use regex::RegexBuilder;
 use std::env;
 use std::fs;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
@@ -214,9 +217,16 @@ pub struct WC {
 }
 
 impl BuiltinCommand for WC {
-    fn name() -> &'static str { "wc" }
+    fn name() -> &'static str {
+        "wc"
+    }
 
-    fn execute(self, stdin: &mut dyn Read, stdout: &mut dyn Write, _env: &mut Environment) -> Result<ExitCode> {
+    fn execute(
+        self,
+        stdin: &mut dyn Read,
+        stdout: &mut dyn Write,
+        _env: &mut Environment,
+    ) -> Result<ExitCode> {
         use std::io::Read;
         if self.files.is_empty() {
             let mut buf = String::new();
@@ -228,7 +238,8 @@ impl BuiltinCommand for WC {
             return Ok(0);
         }
         for fname in self.files {
-            let mut f = std::fs::File::open(&fname).map_err(|e| anyhow::anyhow!("wc: {}: {}", fname, e))?;
+            let mut f =
+                std::fs::File::open(&fname).map_err(|e| anyhow::anyhow!("wc: {}: {}", fname, e))?;
             let mut s = String::new();
             f.read_to_string(&mut s)?;
             let lines = s.lines().count();
@@ -248,9 +259,16 @@ pub struct Cat {
 }
 
 impl BuiltinCommand for Cat {
-    fn name() -> &'static str { "cat" }
+    fn name() -> &'static str {
+        "cat"
+    }
 
-    fn execute(self, _stdin: &mut dyn Read, stdout: &mut dyn Write, _env: &mut Environment) -> Result<ExitCode> {
+    fn execute(
+        self,
+        _stdin: &mut dyn Read,
+        stdout: &mut dyn Write,
+        _env: &mut Environment,
+    ) -> Result<ExitCode> {
         if self.files.is_empty() {
             // read stdin to stdout
             let mut buf = String::new();
@@ -259,10 +277,159 @@ impl BuiltinCommand for Cat {
             return Ok(0);
         }
         for fname in self.files {
-            let mut f = std::fs::File::open(&fname).map_err(|e| anyhow::anyhow!("cat: {}: {}", fname, e))?;
+            let mut f = std::fs::File::open(&fname)
+                .map_err(|e| anyhow::anyhow!("cat: {}: {}", fname, e))?;
             std::io::copy(&mut f, stdout)?;
         }
         Ok(0)
+    }
+}
+
+#[derive(argh::FromArgs)]
+/// print lines matching a pattern
+pub struct Grep {
+    #[argh(positional)]
+    /// the pattern to search for (a regular expression)
+    pub pattern: String,
+
+    #[argh(positional, greedy)]
+    /// files to search. If none provided, reads from stdin.
+    pub files: Vec<String>,
+
+    #[argh(switch, short = 'w')]
+    /// match only whole words (using non-word characters as boundaries)
+    pub word_regexp: bool,
+
+    #[argh(switch, short = 'i')]
+    /// ignore case distinctions
+    pub ignore_case: bool,
+
+    #[argh(option, short = 'A', default = "0")]
+    /// print NUM lines of trailing context after matching lines
+    pub after_context: usize,
+}
+
+impl Grep {
+    fn process_source(
+        &self,
+        reader: &mut dyn Read,
+        stdout: &mut dyn Write,
+        file_name: Option<&str>,
+        re: &regex::Regex,
+    ) -> Result<ExitCode> {
+        let mut reader = BufReader::new(reader);
+
+        let mut lines = Vec::new();
+        let mut match_indices = Vec::new();
+
+        let mut line_num = 0;
+        loop {
+            let mut line = String::new();
+
+            let bytes_read = match reader.read_line(&mut line) {
+                Ok(n) => n,
+                Err(e) => return Err(anyhow::anyhow!("read error: {}", e)),
+            };
+
+            if bytes_read == 0 {
+                break;
+            }
+
+            if re.is_match(&line) {
+                match_indices.push(line_num);
+            }
+
+            lines.push(line);
+            line_num += 1;
+        }
+
+        if lines.is_empty() {
+            return Ok(0);
+        }
+
+        let total_lines = lines.len();
+        let mut to_print = vec![false; total_lines];
+        let context_end = self.after_context;
+
+        for &match_line in &match_indices {
+            let start = match_line;
+            let end_print = (match_line + context_end + 1).min(total_lines);
+
+            for i in start..end_print {
+                to_print[i] = true;
+            }
+        }
+
+        let prefix = file_name
+            .map(|name| format!("{}:", name))
+            .unwrap_or_default();
+        let mut last_printed_index: Option<usize> = None;
+        let separator = if self.after_context > 0 { "--\n" } else { "" };
+
+        for (i, line) in lines.iter().enumerate() {
+            if to_print[i] {
+                if self.after_context > 0
+                    && last_printed_index.is_some()
+                    && i > last_printed_index.unwrap() + 1
+                {
+                    stdout.write_all(separator.as_bytes())?;
+                }
+
+                write!(stdout, "{}{}", prefix, line)?;
+                last_printed_index = Some(i);
+            }
+        }
+
+        Ok(0)
+    }
+}
+
+impl BuiltinCommand for Grep {
+    fn name() -> &'static str {
+        "grep"
+    }
+
+    fn execute(
+        self,
+        stdin: &mut dyn Read,
+        stdout: &mut dyn Write,
+        _env: &mut Environment,
+    ) -> Result<ExitCode> {
+        let user_pattern = self.pattern.clone();
+
+        let pattern = if self.word_regexp {
+            format!(r"\b({})\b", user_pattern)
+        } else {
+            user_pattern
+        };
+
+        let re = RegexBuilder::new(&pattern)
+            .case_insensitive(self.ignore_case)
+            .build()
+            .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
+
+        if self.files.is_empty() {
+            // Чтение из stdin
+            self.process_source(stdin, stdout, None, &re)
+        } else {
+            // Чтение из файлов
+            let mut final_exit_code = 0;
+            for file_name in &self.files {
+                match fs::File::open(file_name) {
+                    Ok(mut f) => {
+                        if let Err(e) = self.process_source(&mut f, stdout, Some(file_name), &re) {
+                            writeln!(stdout, "grep: {}: {}", file_name, e)?;
+                            final_exit_code = 1;
+                        }
+                    }
+                    Err(e) => {
+                        writeln!(stdout, "grep: {}: {}", file_name, e)?;
+                        final_exit_code = 1;
+                    }
+                }
+            }
+            Ok(final_exit_code)
+        }
     }
 }
 
@@ -450,7 +617,9 @@ mod tests {
         };
 
         // Run cat on file
-        let cat = Cat { files: vec![tmp.to_string_lossy().to_string()] };
+        let cat = Cat {
+            files: vec![tmp.to_string_lossy().to_string()],
+        };
         let mut out = Vec::new();
         let res = cat.execute(&mut Cursor::new(Vec::new()), &mut out, &mut env);
         assert!(res.is_ok());
@@ -499,7 +668,9 @@ mod tests {
             should_exit: false,
         };
 
-        let wc = WC { files: vec![tmp.to_string_lossy().to_string()] };
+        let wc = WC {
+            files: vec![tmp.to_string_lossy().to_string()],
+        };
         let mut out = Vec::new();
         let res = wc.execute(&mut Cursor::new(Vec::new()), &mut out, &mut env);
         assert!(res.is_ok());
@@ -557,7 +728,12 @@ mod tests {
             should_exit: false,
         };
 
-        let wc = WC { files: vec![tmp1.to_string_lossy().to_string(), tmp2.to_string_lossy().to_string()] };
+        let wc = WC {
+            files: vec![
+                tmp1.to_string_lossy().to_string(),
+                tmp2.to_string_lossy().to_string(),
+            ],
+        };
         let mut out = Vec::new();
         let res = wc.execute(&mut Cursor::new(Vec::new()), &mut out, &mut env);
         assert!(res.is_ok());
@@ -569,5 +745,167 @@ mod tests {
 
         let _ = fs::remove_file(tmp1);
         let _ = fs::remove_file(tmp2);
+    }
+
+    use std::io::Error;
+
+    struct TestEnvironment {
+        temp_dir: PathBuf,
+        file_path: PathBuf,
+    }
+
+    /// Создает изолированную временную директорию и файл внутри нее.
+    /// Возвращает абсолютный путь к файлу и временную директорию.
+    fn setup_test_environment(content: &str) -> Result<TestEnvironment, Error> {
+        let mut p = stdenv::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir_name = format!("grep_test_dir_{}_{}", std::process::id(), nanos);
+        p.push(dir_name);
+        fs::create_dir_all(&p)?;
+
+        let file_path = p.join("test_data.txt");
+        let mut f = fs::File::create(&file_path)?;
+        write!(f, "{}", content)?;
+        drop(f);
+
+        Ok(TestEnvironment {
+            temp_dir: p,
+            file_path,
+        })
+    }
+
+    #[test]
+    fn test_grep_ignore_case_i_isolated() -> Result<(), anyhow::Error> {
+        let env = setup_test_environment("Target 1\nTaRgEt 2\nNo match\n")
+            .context("Failed to set up environment")?;
+
+        let mut shell_env = Environment::new();
+        let mut out = Vec::new();
+        let filename = env.file_path.to_string_lossy().to_string();
+
+        let grep = Grep {
+            pattern: "target".to_string(),
+            files: vec![filename.clone()],
+            word_regexp: false,
+            ignore_case: true, // <- -i
+            after_context: 0,
+        };
+
+        assert_eq!(
+            grep.execute(&mut Cursor::new(Vec::new()), &mut out, &mut shell_env)?,
+            0
+        );
+        let s = String::from_utf8(out).unwrap();
+
+        let expected = format!("{}:Target 1\n{}:TaRgEt 2\n", filename, filename);
+        assert_eq!(s, expected);
+
+        fs::remove_dir_all(env.temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_grep_trailing_context_a_1_isolated() -> Result<(), anyhow::Error> {
+        let content = "Line 1\nMATCH 1\nLine 3\nLine 4\nMATCH 2\nLine 6\nLine 7\nLine 8\n";
+        let env = setup_test_environment(content).context("Failed to set up environment")?;
+
+        let mut shell_env = Environment::new();
+        let mut out = Vec::new();
+        let filename = env.file_path.to_string_lossy().to_string();
+
+        let grep = Grep {
+            pattern: "MATCH".to_string(),
+            files: vec![filename.clone()],
+            word_regexp: false,
+            ignore_case: false,
+            after_context: 1, // <- -A 1
+        };
+
+        assert_eq!(
+            grep.execute(&mut Cursor::new(Vec::new()), &mut out, &mut shell_env)?,
+            0
+        );
+        let s = String::from_utf8(out).unwrap();
+
+        let expected = format!(
+            "{}:MATCH 1\n\
+            {}:Line 3\n\
+            --\n\
+            {}:MATCH 2\n\
+            {}:Line 6\n",
+            filename, filename, filename, filename
+        );
+
+        assert_eq!(s, expected);
+
+        fs::remove_dir_all(env.temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_grep_context_overlap_a_2_isolated() -> Result<(), anyhow::Error> {
+        let content = "MATCH 1\nLine 2\nMATCH 2\nLine 4\nLine 5\nLine 6\n";
+        let env = setup_test_environment(content).context("Failed to set up environment")?;
+
+        let mut shell_env = Environment::new();
+        let mut out = Vec::new();
+        let filename = env.file_path.to_string_lossy().to_string();
+
+        let grep = Grep {
+            pattern: "MATCH".to_string(),
+            files: vec![filename.clone()],
+            word_regexp: false,
+            ignore_case: false,
+            after_context: 2, // <- -A 2
+        };
+
+        assert_eq!(
+            grep.execute(&mut Cursor::new(Vec::new()), &mut out, &mut shell_env)?,
+            0
+        );
+        let s = String::from_utf8(out).unwrap();
+
+        let expected = format!(
+            "{}:MATCH 1\n\
+            {}:Line 2\n\
+            {}:MATCH 2\n\
+            {}:Line 4\n\
+            {}:Line 5\n",
+            filename, filename, filename, filename, filename
+        );
+
+        assert_eq!(s, expected);
+
+        fs::remove_dir_all(env.temp_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_grep_stdin_pipe_isolated() -> Result<(), anyhow::Error> {
+        let mut shell_env = Environment::new();
+        let mut out = Vec::new();
+
+        let grep = Grep {
+            pattern: "pipe".to_string(),
+            files: Vec::new(), // <- stdin
+            word_regexp: false,
+            ignore_case: false,
+            after_context: 0,
+        };
+
+        let input = b"Line 1\nLine with pipe target\nLine 3\n".to_vec();
+
+        assert_eq!(
+            grep.execute(&mut Cursor::new(input), &mut out, &mut shell_env)?,
+            0
+        );
+        let s = String::from_utf8(out).unwrap();
+
+        // При чтении из stdin префикс файла отсутствует
+        assert_eq!(s, "Line with pipe target\n");
+        Ok(())
     }
 }
