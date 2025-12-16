@@ -91,9 +91,9 @@ impl Interpreter {
                     //     println!("Ast = {:?}", ast);
                     // }
                     let err = self.execute_ast(&ast);
-                    // if err.is_err() {
-                    //     println!("Execution error: {:?}", err.err());
-                    // }
+                    if err.is_err() {
+                         println!("Execution error: {:?}", err.err());
+                    }
                 }
                 Err(ReadlineError::Interrupted) => {
                     println!("Interrupted");
