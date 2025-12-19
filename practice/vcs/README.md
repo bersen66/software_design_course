@@ -6,132 +6,222 @@ VCS разделена на 2 основных части: одна реализ
 Репозиторий — это дерево из коммитов. Каждый коммит содержит ссылку на дерево, которое хранит в себе
 информацию о содержимом объектов/файлов в репозитории. Объекты хранятся в сжатом виде и адресуются по хэшу
 содержимого. Хранилище по хэшу можно абстрагировать и реализовать как в виде файлов в локальной
-ФС, так и в удалённом persistent key-value хранилище (или S3-like).
+ФС, так и в удалённом хранилище.
 
 ## Диаграмма классов
 ```mermaid
 classDiagram
-    class Repository {
-        +id: RepoId
-        +open(path)
-        +commit(message, author)
-        +checkout(ref)
-        +merge(branch)
-        +clone()
-        +fetch()
-        +pull()
+    namespace VCSCore {
+        class Repository {
+            +name: string
+            +remotes: List~Remote~
+
+            +checkout(ref: revisionReference)
+            +createBranch(name: string)
+            +deleteBranch(name: string)
+            +mergeBranch(name: string)
+
+            +log()
+
+            +addToIndex(path: string)
+            +removeFile(path: string)
+
+            +addRemote(name: string, URL: string)
+            +changeRemote(name: string, newName: string, newURL: string)
+
+            +pushToRemote(remoteName: string)
+            +fetchFromRemote(remoteName: string)
+            +pullFromRemote(remoteName: string)
+        }
+
+        class Revision {
+            sha: SHA-512
+            commitMessage: string
+            commitDate: Timestamp
+            parent: Revision
+        }
+
+        class Author {
+            +name: string
+            +email: string
+        }
+
+        class Snapshot {
+            FileTree: Map~fullPath: string, fileHash: SHA-512~
+        }
+
+        class Remote {
+            +name: string
+            +URL: string
+
+            +setName(name: string)
+            +setURL(URL: string)
+        }
+
+        class Index {
+            indexedFiles Map~filePath: string, fileHash: SHA-512~
+        }
+
+        class Branch {
+            +name: string
+        }
     }
 
+    namespace StorageTools {
+        class Storage {
+            <<interface>>
+            +get(fileHash: SHA-512)
+            +put(fileHash: SHA-512, fileContent: bytes)
+        }
 
-    class Commit {
-        +hash: Hash
-        +author: Author
-        +date: DateTime
-        +message: string
-        +tree: Tree
-        +parents: List~Commit~
+        class LocalFS
+        class SQLite
+        class S3
+        class MongoDB
     }
 
+    namespace FileTools {
+        class DiffEngine {
+            <<interface>>
+            computeDiff(content1: bytes, content2: bytes)
+        }
 
-    class Tree {
-        +entries: Map~Path, Blob~
+        class MergeEngine {
+        }
+
+        class MergeAlgorithm {
+            <<interface>>
+            +performMerge(theirs: bytes, ours: bytes, original: bytes, fullPath: string)
+        }
+
+        class ThreeWayMerge {
+        }
+
+        class CustomMerge {
+
+        }
     }
 
+    namespace RemoteTools {
+        class Server {
+            -handleClone() Repository
+            -handleFetch(branchName: string)
+            -handlePush(targetBranch: string, revision: Revision)
+        }
 
-    class Blob {
-        +hash: Hash
-        +content: bytes (compressed)
+        class Client {
+            +clone(URL: string, destinationPath: string) Repository
+            +fetch(remote: string)
+            +push(remote: string, targetBranch: string, revision: Revision)
+        }
     }
 
-
-    class Branch {
-        +name: string
-        +head: Commit
+    namespace UI {
+        class CLI {
+            -parseCommand(input: string)
+            -performAction(cmd: string, args: List<string>)
+            +startServer(addr: string, port: uint)
+        }
     }
 
-    class Index {
-        +add(file)
-        +remove(file)
-        +clear()
-    }
+    Repository "1" o-- "1" Revision : activeRevision
+    Repository "1" o-- "1" Index : index
+    Repository "1" o-- "1" Storage: blobStorage
+    Repository "1" o-- "*" Remote: remotes
+    Repository "1" o-- "1" Remote: origin
 
-    class ObjectStore {
-        +store(obj)
-        +load(hash)
-    }
+    Revision "*" o-- "1" Author: commitAuthor
+    Revision "1" o-- "1" Snapshot: snapshot
 
-    class RefStore {
-        +getHead()
-        +setHead(commit)
-        +createBranch(name, commit)
-        +deleteBranch(name)
-    }
-
-    class MergeEngine {
-        +merge(base, ours, theirs)
-    }
-
-    class DiffEngine {
-        +diff(a, b)
-    }
-
-
-    Repository --> Commit
-    Commit --> Tree
-    Tree --> Blob
-    Repository --> Branch
-    Repository --> Index
-    Repository --> ObjectStore
-    Repository --> RefStore
     Repository --> MergeEngine
-    MergeEngine --> DiffEngine
+    Repository "1" o-- "*" Branch: branches
+
+    Branch "*" o-- "1" Revision: revision
+
+    Storage <|-- LocalFS
+    Storage <|-- SQLite
+    Storage <|-- S3
+    Storage <|-- MongoDB
+
+    MergeAlgorithm <|-- ThreeWayMerge
+    MergeAlgorithm <|-- CustomMerge
+
+    MergeEngine o-- DiffEngine: diffEngine
+    MergeEngine o-- MergeAlgorithm: mergeAlgorithmImpl
+
+    CLI --> Client
+    CLI --> Repository
+    CLI --> Server
+end
 ```
 
 
 ## Диаграммма компонентов
 ```mermaid
 flowchart LR
-    CLI[CLI Interface]
-    API[VCS Library]
 
+subgraph UI
+    CLI[CLI]
+end
 
-    subgraph Core[VCS Core]
-        Repo[Repository]
-        ObjStore[Object Store]
-        RefStore[Refs & Branches]
-        Index[Index / Staging]
-        History[History & Log]
-        Merge[Merge Engine]
-        Diff[Diff Engine]
-        FS[Filesystem Abstraction]
+subgraph VCSCore
+    Repository[Repository]
+    Revision[Revision]
+    Branch[Branch]
+    Index[Index]
+    Snapshot[Snapshot]
+    Remote[Remote]
+end
+
+subgraph StorageTools
+    Storage[[Storage interface]]
+    LocalFS[LocalFS]
+    SQLite[SQLite]
+    S3[S3]
+    MongoDB[MongoDB]
+end
+
+subgraph FileTools
+    MergeEngine[MergeEngine]
+    DiffEngine[[DiffEngine interface]]
+    MergeAlgorithm[[MergeAlgorithm interface]]
+    ThreeWayMerge[ThreeWayMerge]
+    CustomMerge[CustomMerge]
+end
+
+subgraph VCSLib
+    subgraph RemoteTools
+        Client[Client]
+        Server[Server]
     end
 
+    RepositoryTools
+end
 
-    subgraph Remote[Remote subsystem]
-        Client[Remote Client]
-        Proto[Protocol Layer]
-        ServerAPI[Server API]
-    end
+CLI --> RepositoryTools
+CLI --> Client
+CLI --> Server
+RepositoryTools --> Repository
 
+Repository --> Revision
+Repository --> Branch
+Repository --> Index
+Repository --> Snapshot
+Repository --> Remote
+Repository --> Storage
+Repository --> MergeEngine
 
-    CLI --> API
-    API --> Repo
+LocalFS -. implements .-> Storage
+SQLite -. implements .-> Storage
+S3 -. implements .-> Storage
+MongoDB -. implements .-> Storage
 
+MergeEngine --> DiffEngine
+MergeEngine --> MergeAlgorithm
+ThreeWayMerge -. implements .-> MergeAlgorithm
+CustomMerge -. implements .-> MergeAlgorithm
 
-    Repo --> ObjStore
-    Repo --> RefStore
-    Repo --> Index
-    Repo --> History
-    Repo --> Merge
-
-
-    Merge --> Diff
-    ObjStore --> FS
-    RefStore --> FS
-    Index --> FS
-
-
-    API --> Client
-    Client --> Proto
-    Proto --> ServerAPI
+Client --> Server
+Client --> Repository
+Server --> Repository
 ```
