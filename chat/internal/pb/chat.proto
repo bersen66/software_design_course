@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package chat;
+option go_package = "github.com/bersen66/software_design_course/chat/internal/pb;pb";
+
+import "google/protobuf/timestamp.proto";
+
+message ChatMessage {
+  string id = 1;
+  string room = 2;
+  string sender = 3;
+  string text = 4;
+  google.protobuf.Timestamp ts = 5;
+}
+
+message SendRequest {
+  string room = 1;
+  string sender = 2;
+  string text = 3;
+}
+
+message SendResponse {
+  bool ok = 1;
+  string id = 2;
+  google.protobuf.Timestamp ts = 3;
+  string error = 4;
+}
+
+message SubscribeRequest {
+  string room = 1;
+  string since_id = 2;
+
+  google.protobuf.Timestamp since = 3;
+}
+
+service ChatService {
+  rpc Send(SendRequest) returns (SendResponse);
+  rpc Notify(SubscribeRequest) returns (stream ChatMessage);
+}
