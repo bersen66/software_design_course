@@ -230,7 +230,6 @@ impl AstBuilder {
                         }
                     }
                 }
-                _ => break,
             }
         }
 

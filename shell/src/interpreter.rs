@@ -3,10 +3,14 @@ use crate::env::Environment;
 use crate::lexer;
 use crate::lexer::WordPart;
 use crate::parser::{self, AstNode, Word};
+use crate::{MemReader, MemWriter};
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::Stdio;
+use crate::external::find_command_path;
+use std::ffi::OsStr;
+use std::path::Path;
 
 /// Factory allows creating instances of ExecutableCommand.
 ///
@@ -87,9 +91,9 @@ impl Interpreter {
                     //     println!("Ast = {:?}", ast);
                     // }
                     let err = self.execute_ast(&ast);
-                    // if err.is_err() {
-                    //     println!("Execution error: {:?}", err.err());
-                    // }
+                    if err.is_err() {
+                         println!("Execution error: {:?}", err.err());
+                    }
                 }
                 Err(ReadlineError::Interrupted) => {
                     println!("Interrupted");
@@ -109,7 +113,7 @@ impl Interpreter {
         Ok(())
     }
 
-    fn execute_ast(&mut self, root: &AstNode) -> anyhow::Result<ExitCode> {
+    fn execute_ast_with_redifined_output(&mut self, root: &AstNode, final_stdout: &mut dyn Write,) -> anyhow::Result<ExitCode> {
         match root {
             AstNode::Command {
                 argv,
@@ -147,11 +151,121 @@ impl Interpreter {
 
                 self.run(&name, &args_ref)
             }
+            
+            AstNode::Pipeline(commands) => {
+                if commands.is_empty() {
+                    return Err(anyhow::anyhow!("empty pipeline"));
+                }
+
+                let mut previous_output: Option<Vec<u8>> = None;
+                let mut last_exit: crate::command::ExitCode = 0;
+
+                for node in commands {
+                    let (argv_vec, assignments_ref, _redirects_ref) = match node {
+                        AstNode::Command { argv, assignments, redirects } => (argv.clone(), assignments, redirects),
+                        _ => return Err(anyhow::anyhow!("pipeline contains non-command node")),
+                    };
+
+                    // apply assignments in a local env clone
+                    let mut local_env = self.env.clone();
+                    for assign in assignments_ref.iter() {
+                        if let AstNode::Assignment { name, value } = assign {
+                            let val = if let Some(w) = value { self.word_to_string(w)? } else { String::new() };
+                            local_env.set_var(name.clone(), val);
+                        }
+                    }
+
+                    if argv_vec.is_empty() {
+                        return Err(anyhow::anyhow!("empty command in pipeline"));
+                    }
+
+                    // Resolve name and args with local_env by temporarily swapping self.env
+                    let saved_env = std::mem::replace(&mut self.env, local_env.clone());
+                    let name = self.word_to_string(&argv_vec[0])?;
+                    let args: Vec<String> = argv_vec.iter().skip(1).map(|w| self.word_to_string(w)).collect::<anyhow::Result<Vec<String>>>()?;
+                    self.env = saved_env;
+
+                    // Determine if command is external by PATH lookup
+                    let is_external = match self.env.get_var("PATH") {
+                        Some(paths) => find_command_path(OsStr::new(&paths), Path::new(&name)).is_some(),
+                        None => false,
+                    };
+
+                    if is_external {
+                        // External process: spawn, feed previous_output, read stdout
+                        let path = {
+                            let p = find_command_path(OsStr::new(&self.env.get_var("PATH").unwrap()), Path::new(&name)).unwrap();
+                            p.into_owned()
+                        };
+
+                        let mut cmd = std::process::Command::new(path);
+                        cmd.args(&args)
+                            .envs(self.env.vars.iter().map(|(k,v)| (k.as_str(), v.as_str())))
+                            .current_dir(&self.env.current_dir)
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped());
+
+                        let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("failed spawn: {}", e))?;
+
+                        if let Some(buf) = previous_output.take() {
+                            if let Some(mut child_stdin) = child.stdin.take() {
+                                child_stdin.write_all(&buf).map_err(|e| anyhow::anyhow!(e))?;
+                                drop(child_stdin);
+                            }
+                        } else {
+                            drop(child.stdin.take());
+                        }
+
+                        let output = child.wait_with_output().map_err(|e| anyhow::anyhow!(e))?;
+                        previous_output = Some(output.stdout);
+                        last_exit = output.status.code().unwrap_or(1);
+                    } else {
+                        let mut created: Option<Box<dyn crate::command::ExecutableCommand>> = None;
+                        let args_ref_vec: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                        for factory in &self.commands {
+                            if let Some(c) = factory.try_create(&self.env, &name, &args_ref_vec) {
+                                created = Some(c);
+                                break;
+                            }
+                        }
+
+                        let cmd = created.ok_or_else(|| anyhow::anyhow!("command not found: {}", name))?;
+
+                        let stdin_box: Box<dyn crate::command::Stdin> = if let Some(buf) = previous_output.take() {
+                            Box::new(MemReader::new(buf))
+                        } else {
+                            Box::new(InheritedStdin(std::io::stdin().lock()))
+                        };
+
+                        // prepare stdout via with_handle()
+                        let (mw, out_rc) = MemWriter::with_handle();
+                        let stdout_box: Box<dyn crate::command::Stdout> = Box::new(mw);
+
+                        // execute
+                        let mut exec_env = self.env.clone();
+                        match cmd.execute(stdin_box, stdout_box, &mut exec_env) {
+                            Ok(code) => last_exit = code,
+                            Err(_) => last_exit = 1,
+                        }
+
+                        previous_output = Some(out_rc.borrow().clone());
+                    }
+                }
+
+                if let Some(out) = previous_output {
+                    final_stdout.write_all(&out)?;
+                }
+                Ok(last_exit)
+            }
             _ => {
                 // For now, only handle simple commands
                 unimplemented!("Only simple commands are currently supported");
             }
         }
+    }
+
+    fn execute_ast(&mut self, root: &AstNode) -> anyhow::Result<ExitCode> {
+        self.execute_ast_with_redifined_output(root, &mut std::io::stdout())
     }
 
     /// Helper method to convert a Word to a String with environment variable substitution
@@ -195,6 +309,8 @@ impl Default for Interpreter {
             Box::new(Factory::<Echo>::default()),
             Box::new(Factory::<Exit>::default()),
             Box::new(Factory::<ExternalCommand>::default()),
+            Box::new(Factory::<Cat>::default()),
+            Box::new(Factory::<WC>::default())
         ])
     }
 }
@@ -210,5 +326,36 @@ impl Read for InheritedStdin<'_> {
 impl Stdin for InheritedStdin<'_> {
     fn stdio(self: Box<Self>) -> Stdio {
         Stdio::inherit()
+    }
+}
+
+#[cfg(test)]
+mod pipeline_tests {
+    use crate::Interpreter;
+
+
+    #[test]
+    fn test_echo_pipe_wc_output() {
+        // Prepare interpreter factories: only builtin Echo and Wc and ExternalCommand
+        let mut factories: Vec<Box<dyn crate::command::CommandFactory>> = Vec::new();
+        factories.push(Box::new(crate::interpreter::Factory::<crate::builtin::Echo>::default()));
+        factories.push(Box::new(crate::interpreter::Factory::<crate::builtin::WC>::default()));
+        factories.push(Box::new(crate::interpreter::Factory::<crate::external::ExternalCommand>::default()));
+
+        let mut interp = Interpreter::new(factories);
+
+        let line = "echo \"22\" | wc".to_string();
+        let tokens = crate::lexer::split_into_tokens(line).unwrap();
+        let ast = crate::parser::construct_ast(tokens).unwrap();
+
+        let mut out_buf: Vec<u8> = Vec::new();
+        let code = interp.execute_ast_with_redifined_output(&ast, &mut out_buf).unwrap();
+        assert_eq!(code, 0);
+
+        let s = String::from_utf8(out_buf).expect("utf8");
+
+        let normalized = s.split_whitespace().collect::<Vec<&str>>().join(" ");
+
+        assert_eq!(normalized.trim(), "1 1 3");
     }
 }
