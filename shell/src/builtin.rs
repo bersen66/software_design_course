@@ -105,6 +105,21 @@ impl BuiltinCommand for Pwd {
     }
 }
 
+fn process_path(path: &str, env: &Environment) -> Result<PathBuf> {
+    let p = PathBuf::from(path);
+
+    let new_dir = if p.is_absolute() {
+        p
+    } else {
+        env.current_dir.join(p)
+    };
+
+    let canonical = fs::canonicalize(&new_dir)
+        .with_context(|| format!("can't canonicalize {}", new_dir.display()))?;
+
+    Ok(canonical)
+}
+
 #[derive(FromArgs)]
 /// Change the current working directory.
 /// If no target is provided, changes to the directory specified by the HOME environment variable.
@@ -126,7 +141,9 @@ impl BuiltinCommand for Cd {
         env: &mut Environment,
     ) -> Result<ExitCode> {
         let target = match &self.target {
-            Some(t) if !t.is_empty() => PathBuf::from(t),
+            Some(t) if !t.is_empty() => {
+                process_path(t, &env).or_else(|e| Err(anyhow::anyhow!("cd: {}", e)))?
+            }
             _ => {
                 if let Some(home) = env.get_var("HOME") {
                     PathBuf::from(home)
@@ -136,18 +153,54 @@ impl BuiltinCommand for Cd {
             }
         };
 
-        let new_dir = if target.is_absolute() {
-            target
-        } else {
-            env.current_dir.join(target)
-        };
+        env::set_current_dir(&target)
+            .with_context(|| format!("cd: can't chdir to {}", target.display()))?;
+        env.current_dir = target;
+        Ok(0)
+    }
+}
 
-        let canonical = fs::canonicalize(&new_dir)
-            .with_context(|| format!("cd: can't canonicalize {}", new_dir.display()))?;
+#[derive(FromArgs)]
+/// List the directory.
+/// If no directory is provided, lists the directory specified by the PWD environment variable.
+pub struct Ls {
+    #[argh(positional)]
+    /// file or directory to list (defaults to current directory)
+    pub target: Option<String>,
+}
 
-        env::set_current_dir(&canonical)
-            .with_context(|| format!("cd: can't chdir to {}", canonical.display()))?;
-        env.current_dir = canonical;
+impl BuiltinCommand for Ls {
+    fn name() -> &'static str {
+        "ls"
+    }
+
+    fn execute(
+        self,
+        _stdin: &mut dyn Read,
+        stdout: &mut dyn Write,
+        env: &mut Environment,
+    ) -> Result<ExitCode> {
+        let path = process_path(self.target.as_deref().unwrap_or("."), &env)
+            .or_else(|e| Err(anyhow::anyhow!("ls: {}", e)))?;
+
+        let meta =
+            fs::metadata(&path).map_err(|e| anyhow::anyhow!("ls: {}: {}", path.display(), e))?;
+
+        if !meta.is_dir() {
+            writeln!(stdout, "{}", path.display())?;
+            return Ok(0);
+        }
+
+        let mut entries = fs::read_dir(&path)
+            .map_err(|e| anyhow::anyhow!("ls: {}: {}", path.display(), e))?
+            .collect::<Result<Vec<_>, std::io::Error>>()?;
+
+        entries.sort_by_key(|e| e.file_name());
+
+        for e in entries {
+            writeln!(stdout, "{}", e.file_name().to_string_lossy())?;
+        }
+
         Ok(0)
     }
 }
@@ -548,6 +601,47 @@ mod tests {
     }
 
     #[test]
+    fn test_cd_to_relative_path() {
+        let _lock = lock_current_dir();
+        let temp = make_unique_temp_dir().expect("failed to create temp dir");
+        let canonical_temp = fs::canonicalize(&temp).expect("canonicalize failed");
+
+        // save original cwd to restore later
+        let orig = stdenv::current_dir().unwrap();
+
+        let mut env = Environment {
+            vars: HashMap::new(),
+            current_dir: orig.clone(),
+            should_exit: false,
+        };
+
+        let target = Some(canonical_temp.to_string_lossy().to_string());
+        let cmd = Cd { target };
+        let res = cmd.execute(&mut Cursor::new(Vec::new()), &mut Vec::new(), &mut env);
+
+        assert!(res.is_ok());
+
+        let full_path = canonical_temp.join("test");
+        fs::create_dir(&full_path).unwrap();
+
+        let target = Some("test".to_string());
+        let cmd = Cd { target };
+        let res = cmd.execute(&mut Cursor::new(Vec::new()), &mut Vec::new(), &mut env);
+
+        assert!(res.is_ok());
+
+        let new_cwd = stdenv::current_dir().unwrap();
+        let new_canonical = fs::canonicalize(&new_cwd).unwrap();
+
+        assert_eq!(new_canonical, full_path);
+        assert_eq!(env.current_dir, full_path);
+
+        stdenv::set_current_dir(orig).expect("failed to restore cwd");
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
     fn test_cd_to_home_when_none() {
         let _lock = lock_current_dir();
         let temp = make_unique_temp_dir().expect("failed to create temp dir");
@@ -597,6 +691,171 @@ mod tests {
 
         assert!(res.is_err());
         assert_eq!(stdenv::current_dir().unwrap(), orig);
+    }
+
+    #[test]
+    fn test_ls_to_absolute_path() {
+        let _lock = lock_current_dir();
+        let temp = make_unique_temp_dir().expect("failed to create temp dir");
+        let canonical_temp = fs::canonicalize(&temp).expect("canonicalize failed");
+
+        // save original cwd to restore later
+        let orig = stdenv::current_dir().unwrap();
+
+        let mut out1 = Vec::new();
+        let mut env = Environment {
+            vars: HashMap::new(),
+            current_dir: orig.clone(),
+            should_exit: false,
+        };
+
+        fs::create_dir(canonical_temp.join("a")).unwrap();
+        fs::create_dir(canonical_temp.join("b")).unwrap();
+        let f = fs::File::create(canonical_temp.join("c")).expect("create tmp file");
+        drop(f);
+
+        let target = Some(canonical_temp.to_string_lossy().to_string());
+        let cmd = Ls { target };
+        let res = cmd.execute(&mut Cursor::new(Vec::new()), &mut out1, &mut env);
+
+        assert!(res.is_ok());
+        assert_eq!(String::from_utf8(out1).unwrap(), "a\nb\nc\n");
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_ls_to_file() {
+        let _lock = lock_current_dir();
+        let temp = make_unique_temp_dir().expect("failed to create temp dir");
+        let canonical_temp = fs::canonicalize(&temp).expect("canonicalize failed");
+
+        // save original cwd to restore later
+        let orig = stdenv::current_dir().unwrap();
+
+        let mut out1 = Vec::new();
+        let mut env = Environment {
+            vars: HashMap::new(),
+            current_dir: orig.clone(),
+            should_exit: false,
+        };
+
+        let file_path = canonical_temp.join("file");
+        let f = fs::File::create(&file_path).expect("create tmp file");
+        drop(f);
+
+        let target = Some(file_path.to_string_lossy().to_string());
+        let cmd = Ls { target };
+        let res = cmd.execute(&mut Cursor::new(Vec::new()), &mut out1, &mut env);
+
+        assert!(res.is_ok());
+        assert_eq!(
+            String::from_utf8(out1).unwrap(),
+            file_path.to_string_lossy().to_string() + "\n"
+        );
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_ls_to_relative_path() {
+        let _lock = lock_current_dir();
+        let temp = make_unique_temp_dir().expect("failed to create temp dir");
+        let canonical_temp = fs::canonicalize(&temp).expect("canonicalize failed");
+
+        // save original cwd to restore later
+        let orig = stdenv::current_dir().unwrap();
+
+        let mut out1 = Vec::new();
+        let mut env = Environment {
+            vars: HashMap::new(),
+            current_dir: orig.clone(),
+            should_exit: false,
+        };
+
+        let target = Some(canonical_temp.to_string_lossy().to_string());
+        let cmd = Cd { target };
+        let res = cmd.execute(&mut Cursor::new(Vec::new()), &mut Vec::new(), &mut env);
+
+        assert!(res.is_ok());
+
+        let full_path = canonical_temp.join("test");
+        fs::create_dir(&full_path).unwrap();
+        fs::create_dir(full_path.join("a")).unwrap();
+        fs::create_dir(full_path.join("b")).unwrap();
+        let f = fs::File::create(full_path.join("c")).expect("create tmp file");
+        drop(f);
+
+        let target = Some("test".to_string());
+        let cmd = Ls { target };
+        let res = cmd.execute(&mut Cursor::new(Vec::new()), &mut out1, &mut env);
+
+        assert!(res.is_ok());
+        assert_eq!(String::from_utf8(out1).unwrap(), "a\nb\nc\n");
+
+        stdenv::set_current_dir(orig).expect("failed to restore cwd");
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_ls_to_pwd_when_none() {
+        let _lock = lock_current_dir();
+        let temp = make_unique_temp_dir().expect("failed to create temp dir");
+        let canonical_temp = fs::canonicalize(&temp).expect("canonicalize failed");
+
+        // save original cwd to restore later
+        let orig = stdenv::current_dir().unwrap();
+
+        let mut out1 = Vec::new();
+        let mut env = Environment {
+            vars: HashMap::new(),
+            current_dir: orig.clone(),
+            should_exit: false,
+        };
+
+        let target = Some(canonical_temp.to_string_lossy().to_string());
+        let cmd = Cd { target };
+        let res = cmd.execute(&mut Cursor::new(Vec::new()), &mut Vec::new(), &mut env);
+
+        assert!(res.is_ok());
+
+        fs::create_dir(canonical_temp.join("a")).unwrap();
+        fs::create_dir(canonical_temp.join("b")).unwrap();
+        let f = fs::File::create(canonical_temp.join("c")).expect("create tmp file");
+        drop(f);
+
+        let target = None;
+        let cmd = Ls { target };
+        let res = cmd.execute(&mut Cursor::new(Vec::new()), &mut out1, &mut env);
+
+        assert!(res.is_ok());
+        assert_eq!(String::from_utf8(out1).unwrap(), "a\nb\nc\n");
+
+        stdenv::set_current_dir(orig).expect("failed to restore cwd");
+
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_ls_nonexistent_path_errors() {
+        let _lock = lock_current_dir();
+        let orig = stdenv::current_dir().unwrap();
+
+        let mut out1 = Vec::new();
+        let mut env = Environment {
+            vars: HashMap::new(),
+            current_dir: orig.clone(),
+            should_exit: false,
+        };
+
+        let name = format!("nonexistent_dir_for_task1_test_{}", std::process::id());
+        let target = Some(name);
+        let cmd = Ls { target };
+        let res = cmd.execute(&mut Cursor::new(Vec::new()), &mut out1, &mut env);
+
+        assert!(res.is_err());
+        assert!(out1.is_empty());
     }
 
     #[test]
