@@ -1,16 +1,16 @@
 use crate::command::{CommandFactory, ExitCode, Stdin};
 use crate::env::Environment;
+use crate::external::find_command_path;
 use crate::lexer;
 use crate::lexer::WordPart;
 use crate::parser::{self, AstNode, Word};
 use crate::{MemReader, MemWriter};
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result};
-use std::io::{Read, Write};
-use std::process::Stdio;
-use crate::external::find_command_path;
 use std::ffi::OsStr;
+use std::io::{Read, Write};
 use std::path::Path;
+use std::process::Stdio;
 
 /// Factory allows creating instances of ExecutableCommand.
 ///
@@ -92,7 +92,7 @@ impl Interpreter {
                     // }
                     let err = self.execute_ast(&ast);
                     if err.is_err() {
-                         println!("Execution error: {:?}", err.err());
+                        println!("Execution error: {:?}", err.err());
                     }
                 }
                 Err(ReadlineError::Interrupted) => {
@@ -113,7 +113,11 @@ impl Interpreter {
         Ok(())
     }
 
-    fn execute_ast_with_redifined_output(&mut self, root: &AstNode, final_stdout: &mut dyn Write,) -> anyhow::Result<ExitCode> {
+    fn execute_ast_with_redifined_output(
+        &mut self,
+        root: &AstNode,
+        final_stdout: &mut dyn Write,
+    ) -> anyhow::Result<ExitCode> {
         match root {
             AstNode::Command {
                 argv,
@@ -151,7 +155,7 @@ impl Interpreter {
 
                 self.run(&name, &args_ref)
             }
-            
+
             AstNode::Pipeline(commands) => {
                 if commands.is_empty() {
                     return Err(anyhow::anyhow!("empty pipeline"));
@@ -162,7 +166,11 @@ impl Interpreter {
 
                 for node in commands {
                     let (argv_vec, assignments_ref, _redirects_ref) = match node {
-                        AstNode::Command { argv, assignments, redirects } => (argv.clone(), assignments, redirects),
+                        AstNode::Command {
+                            argv,
+                            assignments,
+                            redirects,
+                        } => (argv.clone(), assignments, redirects),
                         _ => return Err(anyhow::anyhow!("pipeline contains non-command node")),
                     };
 
@@ -170,7 +178,11 @@ impl Interpreter {
                     let mut local_env = self.env.clone();
                     for assign in assignments_ref.iter() {
                         if let AstNode::Assignment { name, value } = assign {
-                            let val = if let Some(w) = value { self.word_to_string(w)? } else { String::new() };
+                            let val = if let Some(w) = value {
+                                self.word_to_string(w)?
+                            } else {
+                                String::new()
+                            };
                             local_env.set_var(name.clone(), val);
                         }
                     }
@@ -182,34 +194,48 @@ impl Interpreter {
                     // Resolve name and args with local_env by temporarily swapping self.env
                     let saved_env = std::mem::replace(&mut self.env, local_env.clone());
                     let name = self.word_to_string(&argv_vec[0])?;
-                    let args: Vec<String> = argv_vec.iter().skip(1).map(|w| self.word_to_string(w)).collect::<anyhow::Result<Vec<String>>>()?;
+                    let args: Vec<String> = argv_vec
+                        .iter()
+                        .skip(1)
+                        .map(|w| self.word_to_string(w))
+                        .collect::<anyhow::Result<Vec<String>>>()?;
                     self.env = saved_env;
 
                     // Determine if command is external by PATH lookup
                     let is_external = match self.env.get_var("PATH") {
-                        Some(paths) => find_command_path(OsStr::new(&paths), Path::new(&name)).is_some(),
+                        Some(paths) => {
+                            find_command_path(OsStr::new(&paths), Path::new(&name)).is_some()
+                        }
                         None => false,
                     };
 
                     if is_external {
                         // External process: spawn, feed previous_output, read stdout
                         let path = {
-                            let p = find_command_path(OsStr::new(&self.env.get_var("PATH").unwrap()), Path::new(&name)).unwrap();
+                            let p = find_command_path(
+                                OsStr::new(&self.env.get_var("PATH").unwrap()),
+                                Path::new(&name),
+                            )
+                            .unwrap();
                             p.into_owned()
                         };
 
                         let mut cmd = std::process::Command::new(path);
                         cmd.args(&args)
-                            .envs(self.env.vars.iter().map(|(k,v)| (k.as_str(), v.as_str())))
+                            .envs(self.env.vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
                             .current_dir(&self.env.current_dir)
                             .stdin(std::process::Stdio::piped())
                             .stdout(std::process::Stdio::piped());
 
-                        let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("failed spawn: {}", e))?;
+                        let mut child = cmd
+                            .spawn()
+                            .map_err(|e| anyhow::anyhow!("failed spawn: {}", e))?;
 
                         if let Some(buf) = previous_output.take() {
                             if let Some(mut child_stdin) = child.stdin.take() {
-                                child_stdin.write_all(&buf).map_err(|e| anyhow::anyhow!(e))?;
+                                child_stdin
+                                    .write_all(&buf)
+                                    .map_err(|e| anyhow::anyhow!(e))?;
                                 drop(child_stdin);
                             }
                         } else {
@@ -229,13 +255,15 @@ impl Interpreter {
                             }
                         }
 
-                        let cmd = created.ok_or_else(|| anyhow::anyhow!("command not found: {}", name))?;
+                        let cmd = created
+                            .ok_or_else(|| anyhow::anyhow!("command not found: {}", name))?;
 
-                        let stdin_box: Box<dyn crate::command::Stdin> = if let Some(buf) = previous_output.take() {
-                            Box::new(MemReader::new(buf))
-                        } else {
-                            Box::new(InheritedStdin(std::io::stdin().lock()))
-                        };
+                        let stdin_box: Box<dyn crate::command::Stdin> =
+                            if let Some(buf) = previous_output.take() {
+                                Box::new(MemReader::new(buf))
+                            } else {
+                                Box::new(InheritedStdin(std::io::stdin().lock()))
+                            };
 
                         // prepare stdout via with_handle()
                         let (mw, out_rc) = MemWriter::with_handle();
@@ -308,9 +336,10 @@ impl Default for Interpreter {
             Box::new(Factory::<Cd>::default()),
             Box::new(Factory::<Echo>::default()),
             Box::new(Factory::<Exit>::default()),
-            Box::new(Factory::<ExternalCommand>::default()),
             Box::new(Factory::<Cat>::default()),
-            Box::new(Factory::<WC>::default())
+            Box::new(Factory::<WC>::default()),
+            Box::new(Factory::<Grep>::default()),
+            Box::new(Factory::<ExternalCommand>::default()),
         ])
     }
 }
@@ -333,14 +362,19 @@ impl Stdin for InheritedStdin<'_> {
 mod pipeline_tests {
     use crate::Interpreter;
 
-
     #[test]
     fn test_echo_pipe_wc_output() {
         // Prepare interpreter factories: only builtin Echo and Wc and ExternalCommand
         let mut factories: Vec<Box<dyn crate::command::CommandFactory>> = Vec::new();
-        factories.push(Box::new(crate::interpreter::Factory::<crate::builtin::Echo>::default()));
-        factories.push(Box::new(crate::interpreter::Factory::<crate::builtin::WC>::default()));
-        factories.push(Box::new(crate::interpreter::Factory::<crate::external::ExternalCommand>::default()));
+        factories.push(Box::new(
+            crate::interpreter::Factory::<crate::builtin::Echo>::default(),
+        ));
+        factories.push(Box::new(
+            crate::interpreter::Factory::<crate::builtin::WC>::default(),
+        ));
+        factories.push(Box::new(crate::interpreter::Factory::<
+            crate::external::ExternalCommand,
+        >::default()));
 
         let mut interp = Interpreter::new(factories);
 
@@ -349,7 +383,9 @@ mod pipeline_tests {
         let ast = crate::parser::construct_ast(tokens).unwrap();
 
         let mut out_buf: Vec<u8> = Vec::new();
-        let code = interp.execute_ast_with_redifined_output(&ast, &mut out_buf).unwrap();
+        let code = interp
+            .execute_ast_with_redifined_output(&ast, &mut out_buf)
+            .unwrap();
         assert_eq!(code, 0);
 
         let s = String::from_utf8(out_buf).expect("utf8");

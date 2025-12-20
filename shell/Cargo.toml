@@ -11,5 +11,6 @@ path = "src/main.rs"
 anyhow = "1.0"
 argh = "0.1.13"
 rustyline = "17.0.1"
+regex="1.10"
 
 [dev-dependencies]
