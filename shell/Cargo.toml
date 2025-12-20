@@ -1,0 +1,15 @@
+[package]
+name = "shell_commands"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "shell_commands"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+argh = "0.1.13"
+rustyline = "17.0.1"
+
+[dev-dependencies]
