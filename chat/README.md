@@ -15,3 +15,8 @@ $ go run cmd/server/main.go
 ```bash
 $ go run cmd/client/main.go -addr <addr:port> -user <username> -room <chatroom_name>
 ```
+
+## Запуск тестов
+```bash
+$ go test -v ./...
+```
