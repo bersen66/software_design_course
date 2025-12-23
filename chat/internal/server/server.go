@@ -223,7 +223,6 @@ func StartServer() error {
 	if err := db.Ping(); err != nil {
 		return fmt.Errorf("ping db: %w", err)
 	}
-	// create messages table if needed (integer autoincrement id)
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS messages (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		room TEXT NOT NULL,
