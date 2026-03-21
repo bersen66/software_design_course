@@ -4,8 +4,14 @@ name: Build, test and collect coverage (shell)
 on:
   push:
     branches: ["main"]
+    paths:
+      - shell/**
+      - .github/workflows/rust.yml
   pull_request:
     branches: ["main"]
+    paths:
+      - shell/**
+      - .github/workflows/rust.yml
 
 env:
   CARGO_TERM_COLOR: always

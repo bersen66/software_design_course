@@ -1,0 +1,43 @@
+name: Build and test gRPC chat
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - chat/**
+      - .github/workflows/go.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - chat/**
+      - .github/workflows/go.yml
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Install dependencies
+        run: |
+          cd chat
+          go mod download
+
+      - name: Build the application
+        run: |
+          cd chat
+          go build -v ./...
+
+      - name: Run tests
+        run: |
+          cd chat
+          go test -v ./...
+          go test -race -v ./...
